@@ -1,6 +1,32 @@
 [package]
-name = "iron-gate"
+name = "load-balancer"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
+# The core HTTP engine
+hyper = { version = "1.0", features = ["full"] }
+
+# Glue for Tower/Hyper and the Legacy Client
+hyper-util = { version = "0.1", features = ["full", "client-legacy"] }
+
+# Body utilities for handling request/response data
+http-body-util = "0.1"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# TLS / SSL support
+rustls = "0.23"
+tokio-rustls = "0.26"
+
+# Middleware abstractions
+tower = { version = "0.5", features = ["full"] }
+
+# CLI Argument parsing
+clap = { version = "4.4", features = ["derive"] }
+
+# For Phase 3/4: Database and monitoring
+redis = { version = "0.24", features = ["tokio-comp"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
