@@ -85,12 +85,21 @@ async fn lb_handler(
     mut req: Request<Incoming>,
     state: Arc<LbState>,
 ) -> Result<Response<Incoming>, Box<dyn std::error::Error + Send + Sync>> {
+    let client_ip = req
+        .extensions()
+        .get::<std::net::SocketAddr>()
+        .map(|addr| addr.ip().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+
+
     let path = req.uri().path();
     let target_backend = state.registry.round_robin();
 
     let uri_string = format!("{}{}", target_backend.addr, path);
     let uri = uri_string.parse::<hyper::Uri>()?;
     *req.uri_mut() = uri;
+
+    req.headers_mut().insert("X-Forwarded-For", client_ip.parse()?);
 
     let response = state.client.request(req).await?;
     Ok(response)
@@ -125,9 +134,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("LBRust active on https://{}", addr);
 
     loop {
-        let (raw_socket, _peer_addr) = listener.accept().await?;
+        let (raw_socket, peer_addr) = listener.accept().await?;
         let acceptor = acceptor.clone();
-        let state_for_task = Arc::clone(&state); // Clone for the async task
+        let state_for_task = Arc::clone(&state); 
 
         tokio::spawn(async move {
             let tls_stream = match acceptor.accept(raw_socket).await {
@@ -139,9 +148,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
 
             let io = TokioIo::new(tls_stream);
+            let task_state = Arc::clone(&state_for_task);
 
-            let svc = tower::service_fn(move |req| {
-                lb_handler(req, Arc::clone(&state_for_task))
+            let svc = tower::service_fn(move |mut req: Request<Incoming>| {
+                req.extensions_mut().insert(peer_addr);
+
+                lb_handler(req, Arc::clone(&task_state))
             });
             let logger_svc = Logger::new(svc);
             let final_svc = TowerToHyperService::new(logger_svc);
