@@ -1,3 +1,5 @@
+use http_body_util::{BodyExt, Full};
+use hyper::body::Bytes;
 use clap::Parser;
 use hyper::{body::Incoming, server::conn::http1, Request, Response};
 use hyper_util::{
@@ -17,6 +19,7 @@ use tower::Service;
 
 pub struct Backend {
     pub addr: String,
+    pub is_alive: std::sync::atomic::AtomicBool,
 }
 
 pub struct BackendRegistry {
@@ -25,9 +28,17 @@ pub struct BackendRegistry {
 }
 
 impl BackendRegistry {
-    pub fn round_robin(&self) -> &Backend {
-        let ind = self.curr.fetch_add(1, Ordering::SeqCst) % self.backends.len();
-        &self.backends[ind]
+    pub fn round_robin(&self) -> Option<&Backend> {
+        let len = self.backends.len();
+        for _ in 0..len{
+            let ind = self.curr.fetch_add(1, Ordering::SeqCst) % len;
+            let backend = &self.backends[ind];
+
+            if backend.is_alive.load(Ordering::SeqCst){
+                return Some(backend);
+            }
+        }
+        None
     }
 }
 
@@ -84,7 +95,7 @@ where
 async fn lb_handler(
     mut req: Request<Incoming>,
     state: Arc<LbState>,
-) -> Result<Response<Incoming>, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<Response<Full<Bytes>>, Box<dyn std::error::Error + Send + Sync>> {
     let client_ip = req
         .extensions()
         .get::<std::net::SocketAddr>()
@@ -93,16 +104,29 @@ async fn lb_handler(
 
 
     let path = req.uri().path();
-    let target_backend = state.registry.round_robin();
+    let target_backend = match state.registry.round_robin() {
+        Some(b) => b,
+        None => {
+            eprintln!("CRITICAL: No Healthy backends found!");
+            return Ok(Response::builder()
+                .status(503)
+                .body("No healthy backends available".into())
+                .unwrap());
+        }
+    };
 
-    let uri_string = format!("{}{}", target_backend.addr, path);
+    let uri_string = format!("http://{}{}", target_backend.addr, path);
     let uri = uri_string.parse::<hyper::Uri>()?;
     *req.uri_mut() = uri;
 
     req.headers_mut().insert("X-Forwarded-For", client_ip.parse()?);
 
     let response = state.client.request(req).await?;
-    Ok(response)
+    let (parts, body) = response.into_parts();
+
+    let collected_body = body.collect().await?.to_bytes();
+
+    Ok(Response::from_parts(parts, Full::new(collected_body)))
 }
 
 
@@ -113,8 +137,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state = Arc::new(LbState {
         registry: BackendRegistry {
             backends: vec![
-                Backend { addr: "http://127.0.0.1:9001".to_string() },
-                Backend { addr: "http://127.0.0.1:9002".to_string() },
+                Backend {
+                    addr: "127.0.0.1:9001".to_string(),
+                    is_alive: std::sync::atomic::AtomicBool::new(true)
+                },
+                Backend { 
+                    addr: "127.0.0.1:9002".to_string(),
+                    is_alive: std::sync::atomic::AtomicBool::new(true)
+                },
             ],
             curr: AtomicUsize::new(0),
         },
@@ -132,6 +162,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind(&addr).await?;
 
     println!("LBRust active on https://{}", addr);
+
+    let health_state = Arc::clone(&state);
+
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+        loop{
+            interval.tick().await;
+            for backend in &health_state.registry.backends{
+                let check = tokio::time::timeout(
+                    std::time::Duration::from_secs(1),
+                    tokio::net::TcpStream::connect(&backend.addr)
+                ).await;
+
+                match check{
+                    Ok(Ok(_stream)) =>{
+                        backend.is_alive.store(true, Ordering::SeqCst);
+                    }
+                    _ =>{
+                        eprintln!("Health check Failed for {}", backend.addr);
+                        backend.is_alive.store(false, Ordering::SeqCst);
+                    }
+                }
+            }
+        }
+    });
 
     loop {
         let (raw_socket, peer_addr) = listener.accept().await?;
