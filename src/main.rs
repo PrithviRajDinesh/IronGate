@@ -1,6 +1,6 @@
+use clap::Parser;
 use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
-use clap::Parser;
 use hyper::{body::Incoming, server::conn::http1, Request, Response};
 use hyper_util::{
     client::legacy::Client,
@@ -30,11 +30,11 @@ pub struct BackendRegistry {
 impl BackendRegistry {
     pub fn round_robin(&self) -> Option<&Backend> {
         let len = self.backends.len();
-        for _ in 0..len{
+        for _ in 0..len {
             let ind = self.curr.fetch_add(1, Ordering::SeqCst) % len;
             let backend = &self.backends[ind];
 
-            if backend.is_alive.load(Ordering::SeqCst){
+            if backend.is_alive.load(Ordering::SeqCst) {
                 return Some(backend);
             }
         }
@@ -58,7 +58,6 @@ struct Auth {
     #[arg(long)]
     cert: PathBuf,
 }
-
 
 #[derive(Clone)]
 pub struct Logger<S> {
@@ -102,7 +101,6 @@ async fn lb_handler(
         .map(|addr| addr.ip().to_string())
         .unwrap_or_else(|| "unknown".to_string());
 
-
     let path = req.uri().path();
     let target_backend = match state.registry.round_robin() {
         Some(b) => b,
@@ -119,7 +117,8 @@ async fn lb_handler(
     let uri = uri_string.parse::<hyper::Uri>()?;
     *req.uri_mut() = uri;
 
-    req.headers_mut().insert("X-Forwarded-For", client_ip.parse()?);
+    req.headers_mut()
+        .insert("X-Forwarded-For", client_ip.parse()?);
 
     let response = state.client.request(req).await?;
     let (parts, body) = response.into_parts();
@@ -128,7 +127,6 @@ async fn lb_handler(
 
     Ok(Response::from_parts(parts, Full::new(collected_body)))
 }
-
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -139,11 +137,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             backends: vec![
                 Backend {
                     addr: "127.0.0.1:9001".to_string(),
-                    is_alive: std::sync::atomic::AtomicBool::new(true)
+                    is_alive: std::sync::atomic::AtomicBool::new(true),
                 },
-                Backend { 
+                Backend {
                     addr: "127.0.0.1:9002".to_string(),
-                    is_alive: std::sync::atomic::AtomicBool::new(true)
+                    is_alive: std::sync::atomic::AtomicBool::new(true),
                 },
             ],
             curr: AtomicUsize::new(0),
@@ -167,19 +165,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
-        loop{
+        loop {
             interval.tick().await;
-            for backend in &health_state.registry.backends{
+            for backend in &health_state.registry.backends {
                 let check = tokio::time::timeout(
                     std::time::Duration::from_secs(1),
-                    tokio::net::TcpStream::connect(&backend.addr)
-                ).await;
+                    tokio::net::TcpStream::connect(&backend.addr),
+                )
+                .await;
 
-                match check{
-                    Ok(Ok(_stream)) =>{
+                match check {
+                    Ok(Ok(_stream)) => {
                         backend.is_alive.store(true, Ordering::SeqCst);
                     }
-                    _ =>{
+                    _ => {
                         eprintln!("Health check Failed for {}", backend.addr);
                         backend.is_alive.store(false, Ordering::SeqCst);
                     }
@@ -191,7 +190,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     loop {
         let (raw_socket, peer_addr) = listener.accept().await?;
         let acceptor = acceptor.clone();
-        let state_for_task = Arc::clone(&state); 
+        let state_for_task = Arc::clone(&state);
 
         tokio::spawn(async move {
             let tls_stream = match acceptor.accept(raw_socket).await {
