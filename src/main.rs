@@ -16,6 +16,7 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio_rustls::{rustls, TlsAcceptor};
 use tower::Service;
+use redis::AsyncCommands;
 
 pub struct Backend {
     pub addr: String,
@@ -45,6 +46,7 @@ impl BackendRegistry {
 pub struct LbState {
     pub registry: BackendRegistry,
     pub client: Client<hyper_util::client::legacy::connect::HttpConnector, Incoming>,
+    pub redis: redis::aio::ConnectionManager,
 }
 
 #[derive(Parser)]
@@ -91,6 +93,60 @@ where
     }
 }
 
+async fn handle_stats_request(
+    state: Arc<LbState>
+) -> Result<Response<Full<Bytes>>, Box<dyn std::error::Error + Send + Sync>> {
+    let mut redis_conn = state.redis.clone();
+    let keys: Vec<String> = redis_conn.keys("lb:hits:*").await?;
+
+    let mut stats_html = String::from("
+        <html>
+        <head>
+            <title>Iron Gate Live</title>
+            <style>
+                body { font-family: monospace; background-color: #121212; color: #00ff00; padding: 2rem; }
+                li { font-size: 1.2rem; margin-bottom: 0.5rem; }
+            </style>
+        </head>
+        <body>
+            <h1>Iron Gate Live Stats</h1>
+            <ul id='stats-list'>
+    ");
+
+    for key in keys {
+        let hits: u64 = redis_conn.get(&key).await.unwrap_or(0);
+        let clean_key = key.replace("lb:hits:", "");
+        stats_html.push_str(&format!("<li><b>{}</b>: {} hits</li>", clean_key, hits));
+    }
+
+    stats_html.push_str("
+            </ul>
+            <script>
+                // Run this every 1000 milliseconds (1 second)
+                setInterval(() => {
+                    fetch('/stats')
+                        .then(response => response.text())
+                        .then(html => {
+                            // Parse the incoming HTML quietly in the background
+                            let parser = new DOMParser();
+                            let doc = parser.parseFromString(html, 'text/html');
+                            // Replace the old list with the newly fetched list
+                            document.getElementById('stats-list').innerHTML = doc.getElementById('stats-list').innerHTML;
+                        });
+                }, 1000);
+            </script>
+        </body>
+        </html>
+    ");
+
+    Ok(Response::builder()
+        .status(200)
+        .header("Content-Type", "text/html")
+        .body(Full::new(Bytes::from(stats_html)))
+        .unwrap()
+    )
+}
+
 async fn lb_handler(
     mut req: Request<Incoming>,
     state: Arc<LbState>,
@@ -102,6 +158,11 @@ async fn lb_handler(
         .unwrap_or_else(|| "unknown".to_string());
 
     let path = req.uri().path();
+
+    if path == "/stats"{
+        return handle_stats_request(state).await;
+    }
+
     let target_backend = match state.registry.round_robin() {
         Some(b) => b,
         None => {
@@ -113,6 +174,8 @@ async fn lb_handler(
         }
     };
 
+    let target_backend_addr = target_backend.addr.clone();
+
     let uri_string = format!("http://{}{}", target_backend.addr, path);
     let uri = uri_string.parse::<hyper::Uri>()?;
     *req.uri_mut() = uri;
@@ -121,6 +184,18 @@ async fn lb_handler(
         .insert("X-Forwarded-For", client_ip.parse()?);
 
     let response = state.client.request(req).await?;
+
+    if response.status().is_success(){
+        let mut redis_conn = state.redis.clone();
+        let stats_key = format!("lb:hits:{}", target_backend_addr);
+
+        tokio::spawn(async move{
+            if let Err(e) = redis_conn.incr::<_, _, ()>(stats_key, 1).await{
+                eprintln!("Redis Stats Error: {}", e);
+        }
+    });
+}
+
     let (parts, body) = response.into_parts();
 
     let collected_body = body.collect().await?.to_bytes();
@@ -131,6 +206,11 @@ async fn lb_handler(
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Auth::parse();
+
+    let redis_client = redis::Client::open("redis://127.0.0.1/")?;
+    let redis_manager = redis_client
+        .get_connection_manager()
+        .await?;
 
     let state = Arc::new(LbState {
         registry: BackendRegistry {
@@ -147,6 +227,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             curr: AtomicUsize::new(0),
         },
         client: Client::builder(TokioExecutor::new()).build_http(),
+        redis: redis_manager,
     });
 
     let certs = CertificateDer::pem_file_iter(&args.cert)?.collect::<Result<Vec<_>, _>>()?;
