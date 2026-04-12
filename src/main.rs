@@ -17,6 +17,23 @@ use tokio::net::TcpListener;
 use tokio_rustls::{rustls, TlsAcceptor};
 use tower::Service;
 use redis::AsyncCommands;
+use redis::Script;
+
+const RATE_LIMIT_SCRIPT: &str = r#"
+    local key = KEYS[1]
+    local max_requests = tonumber(ARGV[1])
+    local window_seconds = tonumber(ARGV[2])
+
+    local count = redis.call('INCR', key)
+
+    if count == 1 then
+      redis.call('EXPIRE', key, window_seconds)
+    end
+
+    local pttl = redis.call('PTTL', key)
+
+    return { count, pttl }
+"#;
 
 pub struct Backend {
     pub addr: String,
@@ -156,6 +173,33 @@ async fn lb_handler(
         .get::<std::net::SocketAddr>()
         .map(|addr| addr.ip().to_string())
         .unwrap_or_else(|| "unknown".to_string());
+
+    let mut redis_conn = state.redis.clone();
+
+    let rate_key = format!("rate_limit:{}", client_ip);
+    let max_reqs = 100;
+    let window_sec = 60;
+
+    let script = Script::new(RATE_LIMIT_SCRIPT);
+    let limit_result: Result<Vec<i64>, redis::RedisError> = script
+        .key(&rate_key)
+        .arg(max_reqs)
+        .arg(window_sec)
+        .invoke_async(&mut redis_conn)
+        .await;
+
+    //Fail-Open
+    if let Ok(res) = limit_result {
+        let count = res[0];
+        if count > max_reqs {
+            eprintln!("BlOCKING IP {}: Rate limit exceeded.", client_ip);
+            return Ok(Response::builder()
+                .status(429)
+                .header("Retry-After", window_sec.to_string())
+                .body(Full::new(Bytes::from("429 Too Many Requests\n")))
+                .unwrap());
+        }
+    }
 
     let path = req.uri().path();
 
