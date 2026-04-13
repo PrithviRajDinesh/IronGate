@@ -18,6 +18,8 @@ use tokio_rustls::{rustls, TlsAcceptor};
 use tower::Service;
 use redis::AsyncCommands;
 use redis::Script;
+use std::hash::{Hash, Hasher};
+use std::collections::hash_map::DefaultHasher;
 
 const RATE_LIMIT_SCRIPT: &str = r#"
     local key = KEYS[1]
@@ -38,6 +40,7 @@ const RATE_LIMIT_SCRIPT: &str = r#"
 pub struct Backend {
     pub addr: String,
     pub is_alive: std::sync::atomic::AtomicBool,
+    pub active_connections: std::sync::atomic::AtomicUsize,
 }
 
 pub struct BackendRegistry {
@@ -57,6 +60,31 @@ impl BackendRegistry {
             }
         }
         None
+    }
+
+    pub fn ip_hash(&self, client_ip: &str) ->Option<&Backend> {
+        let healthy_backends: Vec<&Backend> = self
+            .backends
+            .iter()
+            .filter(|b| b.is_alive.load(Ordering::SeqCst))
+            .collect();
+        if healthy_backends.is_empty() {
+            return None;
+        }
+
+        let mut hasher = DefaultHasher::new();
+        client_ip.hash(&mut hasher);
+        let hash_value = hasher.finish();
+
+        let index = (hash_value as usize) % healthy_backends.len();
+        Some(healthy_backends[index])
+    }
+
+    pub fn least_connections(&self) -> Option<&Backend> {
+        self.backends
+            .iter()
+            .filter(|b| b.is_alive.load(Ordering::SeqCst))
+            .min_by_key(|b| b.active_connections.load(Ordering::SeqCst))
     }
 }
 
@@ -207,7 +235,7 @@ async fn lb_handler(
         return handle_stats_request(state).await;
     }
 
-    let target_backend = match state.registry.round_robin() {
+    let target_backend = match state.registry.least_connections() {
         Some(b) => b,
         None => {
             eprintln!("CRITICAL: No Healthy backends found!");
@@ -218,6 +246,8 @@ async fn lb_handler(
         }
     };
 
+    target_backend.active_connections.fetch_add(1, Ordering::SeqCst);
+
     let target_backend_addr = target_backend.addr.clone();
 
     let uri_string = format!("http://{}{}", target_backend.addr, path);
@@ -227,7 +257,11 @@ async fn lb_handler(
     req.headers_mut()
         .insert("X-Forwarded-For", client_ip.parse()?);
 
-    let response = state.client.request(req).await?;
+    let response_result = state.client.request(req).await;
+
+    target_backend.active_connections.fetch_sub(1, Ordering::SeqCst);
+
+    let response = response_result?;
 
     if response.status().is_success(){
         let mut redis_conn = state.redis.clone();
@@ -262,10 +296,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Backend {
                     addr: "127.0.0.1:9001".to_string(),
                     is_alive: std::sync::atomic::AtomicBool::new(true),
+                    active_connections: std::sync::atomic::AtomicUsize::new(0),
                 },
                 Backend {
                     addr: "127.0.0.1:9002".to_string(),
                     is_alive: std::sync::atomic::AtomicBool::new(true),
+                    active_connections: std::sync::atomic::AtomicUsize::new(0),
                 },
             ],
             curr: AtomicUsize::new(0),
