@@ -20,6 +20,8 @@ use redis::AsyncCommands;
 use redis::Script;
 use std::hash::{Hash, Hasher};
 use std::collections::hash_map::DefaultHasher;
+mod config; 
+use config::ConfigManager; // Brings your manager into scope
 
 const RATE_LIMIT_SCRIPT: &str = r#"
     local key = KEYS[1]
@@ -90,6 +92,7 @@ impl BackendRegistry {
 
 pub struct LbState {
     pub registry: BackendRegistry,
+    pub config: Arc<ConfigManager>,
     pub client: Client<hyper_util::client::legacy::connect::HttpConnector, Incoming>,
     pub redis: redis::aio::ConnectionManager,
 }
@@ -196,36 +199,41 @@ async fn lb_handler(
     mut req: Request<Incoming>,
     state: Arc<LbState>,
 ) -> Result<Response<Full<Bytes>>, Box<dyn std::error::Error + Send + Sync>> {
+    
+    let curr_config = state.config.get();
+
     let client_ip = req
         .extensions()
         .get::<std::net::SocketAddr>()
         .map(|addr| addr.ip().to_string())
         .unwrap_or_else(|| "unknown".to_string());
 
-    let mut redis_conn = state.redis.clone();
+    if curr_config.feature_flags.enable_rate_limiting {
+        let mut redis_conn = state.redis.clone();
 
-    let rate_key = format!("rate_limit:{}", client_ip);
-    let max_reqs = 100;
-    let window_sec = 60;
+        let rate_key = format!("rate_limit:{}", client_ip);
+        let max_reqs = 100;
+        let window_sec = 60;
 
-    let script = Script::new(RATE_LIMIT_SCRIPT);
-    let limit_result: Result<Vec<i64>, redis::RedisError> = script
-        .key(&rate_key)
-        .arg(max_reqs)
-        .arg(window_sec)
-        .invoke_async(&mut redis_conn)
-        .await;
+        let script = Script::new(RATE_LIMIT_SCRIPT);
+        let limit_result: Result<Vec<i64>, redis::RedisError> = script
+            .key(&rate_key)
+            .arg(max_reqs)
+            .arg(window_sec)
+            .invoke_async(&mut redis_conn)
+            .await;
 
-    //Fail-Open
-    if let Ok(res) = limit_result {
-        let count = res[0];
-        if count > max_reqs {
-            eprintln!("BlOCKING IP {}: Rate limit exceeded.", client_ip);
-            return Ok(Response::builder()
-                .status(429)
-                .header("Retry-After", window_sec.to_string())
-                .body(Full::new(Bytes::from("429 Too Many Requests\n")))
-                .unwrap());
+        //Fail-Open
+        if let Ok(res) = limit_result {
+            let count = res[0];
+            if count > max_reqs {
+                eprintln!("BlOCKING IP {}: Rate limit exceeded.", client_ip);
+                return Ok(Response::builder()
+                    .status(429)
+                    .header("Retry-After", window_sec.to_string())
+                    .body(Full::new(Bytes::from("429 Too Many Requests\n")))
+                    .unwrap());
+            }
         }
     }
 
@@ -285,6 +293,9 @@ async fn lb_handler(
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Auth::parse();
 
+    let config_manager = Arc::new(ConfigManager::new("config.toml")?);
+    ConfigManager::watch_for_changes(Arc::clone(&config_manager))?;
+
     let redis_client = redis::Client::open("redis://127.0.0.1/")?;
     let redis_manager = redis_client
         .get_connection_manager()
@@ -306,6 +317,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ],
             curr: AtomicUsize::new(0),
         },
+        config: config_manager,
         client: Client::builder(TokioExecutor::new()).build_http(),
         redis: redis_manager,
     });
