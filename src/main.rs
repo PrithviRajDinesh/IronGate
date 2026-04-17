@@ -46,6 +46,7 @@ pub struct Backend {
     pub addr: String,
     pub is_alive: std::sync::atomic::AtomicBool,
     pub active_connections: std::sync::atomic::AtomicUsize,
+    pub consecutive_errors: AtomicUsize,
 }
 
 pub struct BackendRegistry {
@@ -278,7 +279,26 @@ async fn lb_handler(
 
     target_backend.active_connections.fetch_sub(1, Ordering::SeqCst);
 
-    let response = response_result?;
+    let response = match response_result{
+        Ok(res) => {
+            target_backend.consecutive_errors.store(0, Ordering::SeqCst);
+            res
+        },
+        Err(e) => {
+            let errors = target_backend.consecutive_errors.fetch_add(1, Ordering::SeqCst) + 1;
+            eprintln!("Backend {} failed to respond: {}. (Error count: {})", target_backend_addr, e, errors);
+
+            if errors >= 5 {
+                eprintln!(" CIRCUIT BREAKER TRIPPED! Removing {} from active rotation.", target_backend_addr);
+                target_backend.is_alive.store(false, Ordering::SeqCst);
+            }
+
+            return Ok(make_boxed_response(
+                    502,
+                    format!("502 Bad Gateway: Backend {} dropped the Connection\n", target_backend_addr)
+            ));
+        }
+    };
 
     if response.status().is_success(){
         let mut redis_conn = state.redis.clone();
@@ -358,11 +378,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     addr: "127.0.0.1:9001".to_string(),
                     is_alive: std::sync::atomic::AtomicBool::new(true),
                     active_connections: std::sync::atomic::AtomicUsize::new(0),
+                    consecutive_errors: AtomicUsize::new(0),
                 },
                 Backend {
                     addr: "127.0.0.1:9002".to_string(),
                     is_alive: std::sync::atomic::AtomicBool::new(true),
                     active_connections: std::sync::atomic::AtomicUsize::new(0),
+                    consecutive_errors: AtomicUsize::new(0),
                 },
             ],
             curr: AtomicUsize::new(0),
@@ -404,6 +426,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 match check {
                     Ok(Ok(_stream)) => {
                         backend.is_alive.store(true, Ordering::SeqCst);
+                        backend.consecutive_errors.store(0, Ordering::SeqCst);
                     }
                     _ => {
                         eprintln!("Health check Failed for {}", backend.addr);
