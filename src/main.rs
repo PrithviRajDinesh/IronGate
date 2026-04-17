@@ -7,6 +7,7 @@ use hyper_util::{
     rt::{TokioExecutor, TokioIo},
     service::TowerToHyperService,
 };
+use http_body_util::combinators::BoxBody;
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use std::net::ToSocketAddrs;
@@ -22,6 +23,8 @@ use std::hash::{Hash, Hasher};
 use std::collections::hash_map::DefaultHasher;
 mod config; 
 use config::ConfigManager; // Brings your manager into scope
+use moka::future::Cache;
+use std::time::Duration;
 
 const RATE_LIMIT_SCRIPT: &str = r#"
     local key = KEYS[1]
@@ -143,7 +146,7 @@ where
 
 async fn handle_stats_request(
     state: Arc<LbState>
-) -> Result<Response<Full<Bytes>>, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<Response<BoxBody<Bytes, hyper::Error>>, Box<dyn std::error::Error + Send + Sync>> {
     let mut redis_conn = state.redis.clone();
     let keys: Vec<String> = redis_conn.keys("lb:hits:*").await?;
 
@@ -190,7 +193,11 @@ async fn handle_stats_request(
     Ok(Response::builder()
         .status(200)
         .header("Content-Type", "text/html")
-        .body(Full::new(Bytes::from(stats_html)))
+        .body(
+            Full::new(Bytes::from(stats_html))
+            .map_err(|e| match e {})
+            .boxed()
+        )
         .unwrap()
     )
 }
@@ -198,7 +205,7 @@ async fn handle_stats_request(
 async fn lb_handler(
     mut req: Request<Incoming>,
     state: Arc<LbState>,
-) -> Result<Response<Full<Bytes>>, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<Response<BoxBody<Bytes, hyper::Error>>, Box<dyn std::error::Error + Send + Sync>> {
     
     let curr_config = state.config.get();
 
@@ -228,11 +235,7 @@ async fn lb_handler(
             let count = res[0];
             if count > max_reqs {
                 eprintln!("BlOCKING IP {}: Rate limit exceeded.", client_ip);
-                return Ok(Response::builder()
-                    .status(429)
-                    .header("Retry-After", window_sec.to_string())
-                    .body(Full::new(Bytes::from("429 Too Many Requests\n")))
-                    .unwrap());
+                return Ok(make_boxed_response(429, "429 Too Many Requests\n")); 
             }
         }
     }
@@ -247,10 +250,7 @@ async fn lb_handler(
         Some(b) => b,
         None => {
             eprintln!("CRITICAL: No Healthy backends found!");
-            return Ok(Response::builder()
-                .status(503)
-                .body("No healthy backends available".into())
-                .unwrap());
+            return Ok(make_boxed_response(503, "No healthy backends avaiable\n"));
         }
     };
 
@@ -281,12 +281,21 @@ async fn lb_handler(
         }
     });
 }
+    Ok(response.map(|body| body.boxed()))
+}
 
-    let (parts, body) = response.into_parts();
-
-    let collected_body = body.collect().await?.to_bytes();
-
-    Ok(Response::from_parts(parts, Full::new(collected_body)))
+fn make_boxed_response<B: Into<Bytes>>(
+    status: u16,
+    body: B,
+) -> Response<BoxBody<Bytes, hyper::Error>> {
+    Response::builder()
+        .status(status)
+        .body(
+            Full::new(body.into())
+            .map_err(|e| match e {})
+            .boxed(),
+        )
+        .unwrap()
 }
 
 #[tokio::main]
