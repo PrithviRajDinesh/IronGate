@@ -7,6 +7,6 @@ backends = [
 ]
 
 [feature_flags]
-enable_caching = false
+enable_caching = true
 enable_rate_limiting = true
 rate_limit_per_second = 100

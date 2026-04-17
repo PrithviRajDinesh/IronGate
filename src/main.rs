@@ -98,6 +98,7 @@ pub struct LbState {
     pub config: Arc<ConfigManager>,
     pub client: Client<hyper_util::client::legacy::connect::HttpConnector, Incoming>,
     pub redis: redis::aio::ConnectionManager,
+    pub cache: Cache<String, Bytes>,
 }
 
 #[derive(Parser)]
@@ -208,6 +209,7 @@ async fn lb_handler(
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, Box<dyn std::error::Error + Send + Sync>> {
     
     let curr_config = state.config.get();
+    let is_get_request = req.method() == hyper::Method::GET;
 
     let client_ip = req
         .extensions()
@@ -240,7 +242,14 @@ async fn lb_handler(
         }
     }
 
-    let path = req.uri().path();
+    let path = req.uri().path().to_string();
+
+    if curr_config.feature_flags.enable_caching && req.method() == hyper::Method::GET {
+        if let Some(cached_bytes) = state.cache.get(&path).await {
+            println!("CACHE HIT: {}", path);
+            return Ok(make_boxed_response(200, cached_bytes));
+        }
+    }
 
     if path == "/stats"{
         return handle_stats_request(state).await;
@@ -281,6 +290,38 @@ async fn lb_handler(
         }
     });
 }
+    let is_cacheable = curr_config.feature_flags.enable_caching
+    && is_get_request
+    && response.status().is_success();
+
+    if is_cacheable {
+        let content_length = response
+            .headers()
+            .get(hyper::header::CONTENT_LENGTH)
+            .and_then(|val| val.to_str().ok())
+            .and_then(|val| val.parse::<usize>().ok())
+            .unwrap_or(usize::MAX);
+        
+        let five_megabytes = 5 * 1024 * 1024;
+
+        if content_length <= five_megabytes {
+            println!(" CACHING RESPONSE: {} ({} bytes)", path, content_length);
+
+            let (parts, body) = response.into_parts();
+            let collected_bytes = body.collect().await?.to_bytes();
+
+            state.cache.insert(path, collected_bytes.clone()).await;
+
+            return Ok(Response::from_parts (
+                    parts,
+                    Full::new(collected_bytes).map_err(|e| match e {}).boxed()
+            ));
+        }
+        else {
+            println!(" FILE TOO LARGE TO CACHE: {}. Streaming instead.",path);
+        }
+    }
+
     Ok(response.map(|body| body.boxed()))
 }
 
@@ -329,6 +370,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config: config_manager,
         client: Client::builder(TokioExecutor::new()).build_http(),
         redis: redis_manager,
+        cache: Cache::builder()
+            .max_capacity(100 * 1024 * 1024)
+            .time_to_live(Duration::from_secs(60))
+            .build(),
     });
 
     let certs = CertificateDer::pem_file_iter(&args.cert)?.collect::<Result<Vec<_>, _>>()?;
