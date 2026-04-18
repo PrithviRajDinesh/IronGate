@@ -45,7 +45,7 @@ const RATE_LIMIT_SCRIPT: &str = r#"
 pub struct Backend {
     pub addr: String,
     pub is_alive: std::sync::atomic::AtomicBool,
-    pub active_connections: std::sync::atomic::AtomicUsize,
+    pub active_connections: Arc<AtomicUsize>,
     pub consecutive_errors: AtomicUsize,
 }
 
@@ -91,6 +91,23 @@ impl BackendRegistry {
             .iter()
             .filter(|b| b.is_alive.load(Ordering::SeqCst))
             .min_by_key(|b| b.active_connections.load(Ordering::SeqCst))
+    }
+}
+
+struct ConnectionGuard {
+    active_connections: Arc<AtomicUsize>,
+}
+
+impl ConnectionGuard {
+    fn new(counter: Arc<AtomicUsize>) -> Self {
+        counter.fetch_add(1, Ordering::SeqCst);
+        Self { active_connections: counter}
+    }
+}
+
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        self.active_connections.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -264,7 +281,7 @@ async fn lb_handler(
         }
     };
 
-    target_backend.active_connections.fetch_add(1, Ordering::SeqCst);
+    let guard = ConnectionGuard::new(target_backend.active_connections.clone());
 
     let target_backend_addr = target_backend.addr.clone();
 
@@ -276,8 +293,6 @@ async fn lb_handler(
         .insert("X-Forwarded-For", client_ip.parse()?);
 
     let response_result = state.client.request(req).await;
-
-    target_backend.active_connections.fetch_sub(1, Ordering::SeqCst);
 
     let response = match response_result{
         Ok(res) => {
@@ -307,9 +322,9 @@ async fn lb_handler(
         tokio::spawn(async move{
             if let Err(e) = redis_conn.incr::<_, _, ()>(stats_key, 1).await{
                 eprintln!("Redis Stats Error: {}", e);
-        }
-    });
-}
+            }
+        });
+    }
     let is_cacheable = curr_config.feature_flags.enable_caching
     && is_get_request
     && response.status().is_success();
@@ -342,7 +357,12 @@ async fn lb_handler(
         }
     }
 
-    Ok(response.map(|body| body.boxed()))
+    Ok(response.map(|body| {
+        body.map_frame(move |frame| {
+            let _ = &guard;
+            frame
+        }).boxed()
+    }))
 }
 
 fn make_boxed_response<B: Into<Bytes>>(
@@ -377,13 +397,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Backend {
                     addr: "127.0.0.1:9001".to_string(),
                     is_alive: std::sync::atomic::AtomicBool::new(true),
-                    active_connections: std::sync::atomic::AtomicUsize::new(0),
+                    active_connections: Arc::new(AtomicUsize::new(0)), 
                     consecutive_errors: AtomicUsize::new(0),
                 },
                 Backend {
                     addr: "127.0.0.1:9002".to_string(),
                     is_alive: std::sync::atomic::AtomicBool::new(true),
-                    active_connections: std::sync::atomic::AtomicUsize::new(0),
+                    active_connections: Arc::new(AtomicUsize::new(0)),
                     consecutive_errors: AtomicUsize::new(0),
                 },
             ],
@@ -437,34 +457,79 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    println!("Iron Gate is running! Press Ctrl+C to stop.");
+
     loop {
-        let (raw_socket, peer_addr) = listener.accept().await?;
-        let acceptor = acceptor.clone();
-        let state_for_task = Arc::clone(&state);
+        tokio::select! {
+            // Branch A: Accept new incoming connections
+            accept_result = listener.accept() => {
+                let (raw_socket, peer_addr) = match accept_result {
+                    Ok(conn) => conn,
+                    Err(e) => {
+                        eprintln!("Accept error: {}", e);
+                        continue;
+                    }
+                };
 
-        tokio::spawn(async move {
-            let tls_stream = match acceptor.accept(raw_socket).await {
-                Ok(stream) => stream,
-                Err(e) => {
-                    eprintln!("Handshake failed: {}", e);
-                    return;
-                }
-            };
+                let acceptor = acceptor.clone();
+                let state_for_task = Arc::clone(&state);
 
-            let io = TokioIo::new(tls_stream);
-            let task_state = Arc::clone(&state_for_task);
+                // Spawn the handler thread exactly like before
+                tokio::spawn(async move {
+                    let tls_stream = match acceptor.accept(raw_socket).await {
+                        Ok(stream) => stream,
+                        Err(e) => {
+                            eprintln!("Handshake failed: {}", e);
+                            return;
+                        }
+                    };
 
-            let svc = tower::service_fn(move |mut req: Request<Incoming>| {
-                req.extensions_mut().insert(peer_addr);
+                    let io = TokioIo::new(tls_stream);
+                    let task_state = Arc::clone(&state_for_task);
 
-                lb_handler(req, Arc::clone(&task_state))
-            });
-            let logger_svc = Logger::new(svc);
-            let final_svc = TowerToHyperService::new(logger_svc);
+                    let svc = tower::service_fn(move |mut req: Request<Incoming>| {
+                        req.extensions_mut().insert(peer_addr);
+                        lb_handler(req, Arc::clone(&task_state))
+                    });
+                    
+                    let logger_svc = Logger::new(svc);
+                    let final_svc = TowerToHyperService::new(logger_svc);
 
-            if let Err(err) = http1::Builder::new().serve_connection(io, final_svc).await {
-                eprintln!("Connection error: {}", err);
+                    if let Err(err) = http1::Builder::new().serve_connection(io, final_svc).await {
+                        eprintln!("Connection error: {}", err);
+                    }
+                });
             }
-        });
+
+            // Branch B: Listen for the OS shutdown signal
+            _ = tokio::signal::ctrl_c() => {
+                println!("\n🛑 Graceful shutdown initiated. Refusing new connections...");
+                break;
+            }
+        }
     }
+
+    // 2. The Connection Draining Phase
+    println!("Waiting for active connections to finish...");
+    
+    loop {
+        let mut total_active = 0;
+        
+        // Sum up all active connections across all backends
+        for backend in &state.registry.backends {
+            total_active += backend.active_connections.load(Ordering::SeqCst);
+        }
+
+        if total_active == 0 {
+            println!("All connections drained successfully. Iron Gate shutting down.");
+            break;
+        }
+
+        // Print status and sleep briefly so we don't fry the CPU
+        println!("   Draining... {} connections still active.", total_active);
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+
+    Ok(())
 }
+
