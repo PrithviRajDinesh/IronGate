@@ -7,12 +7,18 @@ use std::sync::mpsc::channel;
 use std::time::Duration;
 
 #[derive(Debug, Deserialize, Clone)]
+pub struct BackendConfig {
+    pub address: String,
+    pub weight: usize,
+}
+
+#[derive(Debug, Deserialize, Clone)]
 pub struct Config {
     pub server_port: u16,
     pub timeout_ms: u64,
     pub max_connections: usize,
     pub feature_flags: FeatureFlags,
-    pub backends: Vec<String>,
+    pub backends: Vec<BackendConfig>,
 }
 
 #[derive(Debug, Deserialize, Clone)]

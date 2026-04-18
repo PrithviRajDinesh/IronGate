@@ -1,10 +1,14 @@
 server_port = 8080
 timeout_ms = 8000
 max_connections = 1000
-backends = [
-    "127.0.0.1:9001",
-    "127.0.0.1:9002"
-]
+
+[[backends]]
+address = "127.0.0.1:9001"
+weight = 10
+
+[[backends]]
+address = "127.0.0.1:9002"
+weight = 1
 
 [feature_flags]
 enable_caching = false

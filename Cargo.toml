@@ -34,3 +34,5 @@ notify = "6.1"
 toml = "0.8"
 
 moka = { version = "0.12", features = ["future"] }
+
+rand = "0.8"

@@ -22,9 +22,11 @@ use redis::Script;
 use std::hash::{Hash, Hasher};
 use std::collections::hash_map::DefaultHasher;
 mod config; 
-use config::ConfigManager; // Brings your manager into scope
+use config::ConfigManager;
 use moka::future::Cache;
 use std::time::Duration;
+use rand::thread_rng;
+use rand::distributions::{WeightedIndex, Distribution};
 
 const RATE_LIMIT_SCRIPT: &str = r#"
     local key = KEYS[1]
@@ -47,6 +49,7 @@ pub struct Backend {
     pub is_alive: std::sync::atomic::AtomicBool,
     pub active_connections: Arc<AtomicUsize>,
     pub consecutive_errors: AtomicUsize,
+    pub weight: usize,
 }
 
 pub struct BackendRegistry {
@@ -91,6 +94,29 @@ impl BackendRegistry {
             .iter()
             .filter(|b| b.is_alive.load(Ordering::SeqCst))
             .min_by_key(|b| b.active_connections.load(Ordering::SeqCst))
+    }
+
+    pub fn weighted_random(&self) -> Option<&Backend> {
+        let alive_backends: Vec<&Backend> = self
+            .backends
+            .iter()
+            .filter(|b| b.is_alive.load(Ordering::SeqCst))
+            .collect();
+        if alive_backends.is_empty() {
+            return None;
+        }
+
+        let weights: Vec<usize> = alive_backends.iter().map(|b| b.weight). collect();
+
+        let dist = match WeightedIndex::new(&weights) {
+            Ok(d) => d,
+            Err(_) => return Some(alive_backends[0]),
+        };
+        // Roll the dice and return chosen server 
+        let mut rng = thread_rng();
+        let index = dist.sample(&mut rng);
+
+        Some(alive_backends[index])
     }
 }
 
@@ -273,7 +299,7 @@ async fn lb_handler(
         return handle_stats_request(state).await;
     }
 
-    let target_backend = match state.registry.least_connections() {
+    let target_backend = match state.registry.weighted_random() {
         Some(b) => b,
         None => {
             eprintln!("CRITICAL: No Healthy backends found!");
@@ -391,22 +417,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .get_connection_manager()
         .await?;
 
+    let initial_config = config_manager.get();
+    let mut backend_nodes = Vec::new();
+
+    for b_conf in initial_config.backends.iter() {
+        backend_nodes.push(Backend {
+            addr: b_conf.address.clone(),
+            is_alive: std::sync::atomic::AtomicBool::new(true),
+            active_connections: Arc::new(AtomicUsize::new(0)),
+            consecutive_errors: AtomicUsize::new(0),
+            weight: b_conf.weight,
+        });
+    }
+
     let state = Arc::new(LbState {
         registry: BackendRegistry {
-            backends: vec![
-                Backend {
-                    addr: "127.0.0.1:9001".to_string(),
-                    is_alive: std::sync::atomic::AtomicBool::new(true),
-                    active_connections: Arc::new(AtomicUsize::new(0)), 
-                    consecutive_errors: AtomicUsize::new(0),
-                },
-                Backend {
-                    addr: "127.0.0.1:9002".to_string(),
-                    is_alive: std::sync::atomic::AtomicBool::new(true),
-                    active_connections: Arc::new(AtomicUsize::new(0)),
-                    consecutive_errors: AtomicUsize::new(0),
-                },
-            ],
+            backends: backend_nodes,
             curr: AtomicUsize::new(0),
         },
         config: config_manager,
