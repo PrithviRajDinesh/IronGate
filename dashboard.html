@@ -1,0 +1,777 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Iron Gate — Live Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg:        #050a0e;
+    --panel:     #0a1520;
+    --border:    #0d3348;
+    --accent:    #00d4ff;
+    --accent2:   #ff6b35;
+    --green:     #00ff88;
+    --red:       #ff3355;
+    --yellow:    #ffd700;
+    --text:      #c8e8f0;
+    --muted:     #4a7a90;
+    --font-mono: 'Share Tech Mono', monospace;
+    --font-disp: 'Orbitron', sans-serif;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-mono);
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* Scanline overlay */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0,212,255,0.015) 2px,
+      rgba(0,212,255,0.015) 4px
+    );
+    pointer-events: none;
+    z-index: 999;
+  }
+
+  /* Grid background */
+  body::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(0,212,255,0.04) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,212,255,0.04) 1px, transparent 1px);
+    background-size: 40px 40px;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .wrapper {
+    position: relative;
+    z-index: 1;
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 2rem 1.5rem;
+  }
+
+  /* ── Header ── */
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 2.5rem;
+    padding-bottom: 1.5rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .logo {
+    display: flex;
+    align-items: baseline;
+    gap: 0.75rem;
+  }
+
+  .logo-title {
+    font-family: var(--font-disp);
+    font-size: 1.8rem;
+    font-weight: 900;
+    color: var(--accent);
+    text-shadow: 0 0 20px rgba(0,212,255,0.5);
+    letter-spacing: 0.1em;
+  }
+
+  .logo-sub {
+    font-size: 0.75rem;
+    color: var(--muted);
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+  }
+
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 1.5rem;
+  }
+
+  .status-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--green);
+    box-shadow: 0 0 10px var(--green);
+    animation: pulse 2s ease-in-out infinite;
+  }
+
+  .status-dot.dead { background: var(--red); box-shadow: 0 0 10px var(--red); animation: none; }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; box-shadow: 0 0 10px var(--green); }
+    50%       { opacity: 0.4; box-shadow: 0 0 4px var(--green); }
+  }
+
+  #connection-status {
+    font-size: 0.75rem;
+    color: var(--muted);
+    letter-spacing: 0.1em;
+  }
+
+  #last-update {
+    font-size: 0.7rem;
+    color: var(--muted);
+  }
+
+  /* Config bar */
+  .config-bar {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin-bottom: 2rem;
+    padding: 0.75rem 1rem;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    flex-wrap: wrap;
+  }
+
+  .config-bar label {
+    font-size: 0.7rem;
+    color: var(--muted);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    margin-right: 0.25rem;
+  }
+
+  .config-bar input {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    padding: 0.3rem 0.6rem;
+    border-radius: 3px;
+    width: 260px;
+  }
+
+  .config-bar input:focus { outline: none; border-color: var(--accent); }
+
+  .btn {
+    background: transparent;
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    padding: 0.35rem 0.8rem;
+    border-radius: 3px;
+    cursor: pointer;
+    letter-spacing: 0.08em;
+    transition: background 0.15s, color 0.15s;
+  }
+  .btn:hover { background: var(--accent); color: var(--bg); }
+
+  /* ── Stats grid ── */
+  .top-stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 1rem;
+    margin-bottom: 2rem;
+  }
+
+  .stat-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1.2rem 1.5rem;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .stat-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, var(--accent), transparent);
+  }
+
+  .stat-label {
+    font-size: 0.65rem;
+    color: var(--muted);
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    margin-bottom: 0.5rem;
+  }
+
+  .stat-value {
+    font-family: var(--font-disp);
+    font-size: 2rem;
+    font-weight: 700;
+    color: var(--accent);
+    line-height: 1;
+    transition: color 0.3s;
+  }
+
+  .stat-value.green { color: var(--green); }
+  .stat-value.red   { color: var(--red); }
+  .stat-value.yellow { color: var(--yellow); }
+
+  .stat-unit {
+    font-size: 0.65rem;
+    color: var(--muted);
+    margin-top: 0.3rem;
+  }
+
+  /* ── Backend table ── */
+  .section-title {
+    font-family: var(--font-disp);
+    font-size: 0.7rem;
+    letter-spacing: 0.2em;
+    color: var(--muted);
+    text-transform: uppercase;
+    margin-bottom: 0.75rem;
+    padding-left: 0.5rem;
+    border-left: 2px solid var(--accent);
+  }
+
+  .backends-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+    gap: 1rem;
+    margin-bottom: 2rem;
+  }
+
+  .backend-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1.2rem 1.5rem;
+    position: relative;
+  }
+
+  .backend-card.alive  { border-left: 3px solid var(--green); }
+  .backend-card.dead   { border-left: 3px solid var(--red); opacity: 0.7; }
+
+  .backend-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 1rem;
+  }
+
+  .backend-addr {
+    font-size: 0.9rem;
+    color: var(--accent);
+    letter-spacing: 0.05em;
+  }
+
+  .backend-badge {
+    font-size: 0.65rem;
+    letter-spacing: 0.1em;
+    padding: 0.2rem 0.5rem;
+    border-radius: 2px;
+    text-transform: uppercase;
+  }
+
+  .badge-up   { background: rgba(0,255,136,0.15); color: var(--green); border: 1px solid rgba(0,255,136,0.3); }
+  .badge-down { background: rgba(255,51,85,0.15);  color: var(--red);   border: 1px solid rgba(255,51,85,0.3); }
+
+  .backend-metrics {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+  }
+
+  .bm-item { text-align: center; }
+  .bm-label { font-size: 0.6rem; color: var(--muted); letter-spacing: 0.1em; text-transform: uppercase; }
+  .bm-val   { font-family: var(--font-disp); font-size: 1.2rem; color: var(--text); }
+
+  /* Traffic bar */
+  .traffic-bar-wrap {
+    margin-top: 0.75rem;
+  }
+
+  .traffic-bar-label {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.65rem;
+    color: var(--muted);
+    margin-bottom: 0.3rem;
+  }
+
+  .traffic-bar {
+    height: 4px;
+    background: rgba(255,255,255,0.08);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  .traffic-bar-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    border-radius: 2px;
+    transition: width 0.6s ease;
+  }
+
+  /* ── Sparkline chart ── */
+  .chart-section {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1.5rem;
+    margin-bottom: 2rem;
+  }
+
+  .chart-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1rem;
+  }
+
+  canvas {
+    width: 100%;
+    height: 160px;
+    display: block;
+  }
+
+  /* ── Log stream ── */
+  .log-section {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1.2rem 1.5rem;
+  }
+
+  #log-stream {
+    height: 130px;
+    overflow-y: auto;
+    font-size: 0.72rem;
+    color: var(--muted);
+    line-height: 1.7;
+  }
+
+  #log-stream::-webkit-scrollbar { width: 4px; }
+  #log-stream::-webkit-scrollbar-track { background: var(--bg); }
+  #log-stream::-webkit-scrollbar-thumb { background: var(--border); }
+
+  .log-entry { display: flex; gap: 0.75rem; }
+  .log-ts  { color: var(--border); flex-shrink: 0; }
+  .log-ok  { color: var(--green); }
+  .log-err { color: var(--red); }
+  .log-warn{ color: var(--yellow); }
+
+  /* Error banner */
+  #error-banner {
+    display: none;
+    background: rgba(255,51,85,0.1);
+    border: 1px solid rgba(255,51,85,0.3);
+    color: var(--red);
+    font-size: 0.75rem;
+    padding: 0.6rem 1rem;
+    border-radius: 4px;
+    margin-bottom: 1rem;
+  }
+
+  /* Fade-in */
+  @keyframes fadeIn { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:translateY(0); } }
+  .stat-card, .backend-card, .chart-section, .log-section {
+    animation: fadeIn 0.4s ease both;
+  }
+</style>
+</head>
+<body>
+<div class="wrapper">
+
+  <!-- Header -->
+  <header>
+    <div class="logo">
+      <span class="logo-title">IRON GATE</span>
+      <span class="logo-sub">Load Balancer Monitor</span>
+    </div>
+    <div class="header-right">
+      <div id="status-dot" class="status-dot dead"></div>
+      <span id="connection-status">CONNECTING…</span>
+      <span id="last-update">—</span>
+    </div>
+  </header>
+
+  <!-- Config -->
+  <div class="config-bar">
+    <label>Metrics URL</label>
+    <input type="text" id="metrics-url" value="https://127.0.0.1:8080/metrics" />
+    <label>Interval</label>
+    <input type="number" id="poll-interval" value="2" min="1" max="60" style="width:60px" /> s
+    <button class="btn" onclick="applyConfig()">APPLY</button>
+  </div>
+
+  <!-- Error banner -->
+  <div id="error-banner"></div>
+
+  <!-- Top stats -->
+  <div class="top-stats">
+    <div class="stat-card">
+      <div class="stat-label">Total Requests</div>
+      <div class="stat-value" id="stat-total">—</div>
+      <div class="stat-unit">all backends</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Active Connections</div>
+      <div class="stat-value green" id="stat-active">—</div>
+      <div class="stat-unit">live streams</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Req / sec</div>
+      <div class="stat-value yellow" id="stat-rps">—</div>
+      <div class="stat-unit">1-second rate</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Healthy Backends</div>
+      <div class="stat-value" id="stat-healthy">—</div>
+      <div class="stat-unit">of total</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Error Rate</div>
+      <div class="stat-value" id="stat-err-rate">—</div>
+      <div class="stat-unit">non-2xx %</div>
+    </div>
+  </div>
+
+  <!-- Backends -->
+  <div class="section-title">Backend Nodes</div>
+  <div class="backends-grid" id="backends-grid">
+    <div class="backend-card" style="color:var(--muted);font-size:0.8rem">Waiting for data…</div>
+  </div>
+
+  <!-- Sparkline -->
+  <div class="chart-section">
+    <div class="chart-header">
+      <div class="section-title" style="margin:0">Request Rate (req/s)</div>
+      <span style="font-size:0.65rem;color:var(--muted)" id="chart-window">last 60 samples</span>
+    </div>
+    <canvas id="rps-chart"></canvas>
+  </div>
+
+  <!-- Log -->
+  <div class="log-section">
+    <div class="section-title" style="margin-bottom:0.75rem">Event Log</div>
+    <div id="log-stream"></div>
+  </div>
+
+</div>
+
+<script>
+// ── State ───────────────────────────────────────────────────────────────────
+let metricsUrl   = document.getElementById('metrics-url').value;
+let pollMs       = 2000;
+let timerId      = null;
+let prevTotal    = null;
+let prevTs       = null;
+let rpsHistory   = [];
+const MAX_PTS    = 60;
+
+// Per-backend previous totals for per-backend rate
+let prevBackendTotals = {};
+
+// ── Prometheus text parser ───────────────────────────────────────────────────
+function parsePrometheus(text) {
+  const metrics = {};
+  for (const line of text.split('\n')) {
+    if (line.startsWith('#') || !line.trim()) continue;
+    const m = line.match(/^(\S+?)(\{[^}]*\})?\s+([\d.e+\-Ee]+)/);
+    if (!m) continue;
+    const name   = m[1];
+    const labels = parseLabels(m[2] || '');
+    const value  = parseFloat(m[3]);
+    if (!metrics[name]) metrics[name] = [];
+    metrics[name].push({ labels, value });
+  }
+  return metrics;
+}
+
+function parseLabels(str) {
+  const obj = {};
+  if (!str) return obj;
+  const inner = str.slice(1, -1);
+  const re = /(\w+)="([^"]*)"/g;
+  let m;
+  while ((m = re.exec(inner)) !== null) obj[m[1]] = m[2];
+  return obj;
+}
+
+// ── Fetch & process ──────────────────────────────────────────────────────────
+async function fetchMetrics() {
+  try {
+    const res = await fetch(metricsUrl, { cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const text = await res.text();
+    processMetrics(parsePrometheus(text));
+    setConnected(true);
+    hideError();
+  } catch (e) {
+    setConnected(false);
+    showError(`Cannot reach ${metricsUrl} — ${e.message}`);
+    log(`Fetch failed: ${e.message}`, 'err');
+  }
+}
+
+function processMetrics(m) {
+  const now = Date.now();
+
+  // ── iron_gate_requests_total ─────────────────────────────────────────────
+  const reqSeries  = m['iron_gate_requests_total'] || [];
+  const connSeries = m['iron_gate_active_connections'] || [];
+
+  // Group by backend
+  const byBackend = {};
+  for (const s of reqSeries) {
+    const b = s.labels.backend || 'unknown';
+    if (!byBackend[b]) byBackend[b] = { total: 0, statuses: {} };
+    byBackend[b].total += s.value;
+    byBackend[b].statuses[s.labels.status || '?'] = s.value;
+  }
+
+  // Active connections by backend
+  const activeByBackend = {};
+  let totalActive = 0;
+  for (const s of connSeries) {
+    activeByBackend[s.labels.backend || 'unknown'] = s.value;
+    totalActive += s.value;
+  }
+
+  // Grand totals
+  let grandTotal = 0;
+  let errorTotal = 0;
+  for (const bd of Object.values(byBackend)) {
+    grandTotal += bd.total;
+    for (const [st, cnt] of Object.entries(bd.statuses)) {
+      if (!st.startsWith('2')) errorTotal += cnt;
+    }
+  }
+
+  // RPS
+  let rps = 0;
+  if (prevTotal !== null && prevTs !== null) {
+    const dt = (now - prevTs) / 1000;
+    rps = Math.max(0, (grandTotal - prevTotal) / dt);
+  }
+  prevTotal = grandTotal;
+  prevTs = now;
+
+  rpsHistory.push(rps);
+  if (rpsHistory.length > MAX_PTS) rpsHistory.shift();
+
+  // Error rate
+  const errRate = grandTotal > 0 ? ((errorTotal / grandTotal) * 100).toFixed(1) : '0.0';
+
+  // ── Update top stats ─────────────────────────────────────────────────────
+  setText('stat-total',  fmtNum(grandTotal));
+  setText('stat-active', totalActive);
+  setText('stat-rps',    rps.toFixed(2));
+  setText('stat-err-rate', errRate + '%');
+
+  const errEl = document.getElementById('stat-err-rate');
+  errEl.className = 'stat-value ' + (parseFloat(errRate) > 5 ? 'red' : parseFloat(errRate) > 1 ? 'yellow' : 'green');
+
+  // ── Backend cards ─────────────────────────────────────────────────────────
+  const backendList = Object.keys(byBackend);
+  const healthy = backendList.length; // we only see backends that responded
+
+  setText('stat-healthy', `${healthy}/${healthy}`);
+  document.getElementById('stat-healthy').className = 'stat-value green';
+
+  const grid = document.getElementById('backends-grid');
+  grid.innerHTML = '';
+
+  for (const [addr, bd] of Object.entries(byBackend)) {
+    const active  = activeByBackend[addr] || 0;
+    const pct     = grandTotal > 0 ? ((bd.total / grandTotal) * 100).toFixed(1) : '0';
+
+    // Per-backend rps
+    let bRps = 0;
+    if (prevBackendTotals[addr] !== undefined && prevTs) {
+      const dt = (now - (prevTs || now)) / 1000 || 1;
+      bRps = Math.max(0, (bd.total - prevBackendTotals[addr]) / (pollMs / 1000));
+    }
+    prevBackendTotals[addr] = bd.total;
+
+    const ok = Object.entries(bd.statuses)
+      .filter(([s]) => s.startsWith('2'))
+      .reduce((a,[,v]) => a+v, 0);
+
+    const card = document.createElement('div');
+    card.className = 'backend-card alive';
+    card.innerHTML = `
+      <div class="backend-header">
+        <span class="backend-addr">${addr}</span>
+        <span class="backend-badge badge-up">UP</span>
+      </div>
+      <div class="backend-metrics">
+        <div class="bm-item">
+          <div class="bm-label">Requests</div>
+          <div class="bm-val">${fmtNum(bd.total)}</div>
+        </div>
+        <div class="bm-item">
+          <div class="bm-label">Active</div>
+          <div class="bm-val">${active}</div>
+        </div>
+        <div class="bm-item">
+          <div class="bm-label">2xx OK</div>
+          <div class="bm-val">${fmtNum(ok)}</div>
+        </div>
+      </div>
+      <div class="traffic-bar-wrap">
+        <div class="traffic-bar-label">
+          <span>Traffic share</span><span>${pct}%</span>
+        </div>
+        <div class="traffic-bar">
+          <div class="traffic-bar-fill" style="width:${pct}%"></div>
+        </div>
+      </div>`;
+    grid.appendChild(card);
+  }
+
+  if (backendList.length === 0) {
+    grid.innerHTML = '<div class="backend-card" style="color:var(--muted);font-size:0.8rem">No backend data yet — is Iron Gate running?</div>';
+  }
+
+  // ── Chart ─────────────────────────────────────────────────────────────────
+  drawChart();
+
+  // ── Last update ──────────────────────────────────────────────────────────
+  document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
+}
+
+// ── Sparkline canvas ─────────────────────────────────────────────────────────
+function drawChart() {
+  const canvas = document.getElementById('rps-chart');
+  canvas.width  = canvas.offsetWidth  || 800;
+  canvas.height = canvas.offsetHeight || 160;
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  const data = rpsHistory;
+
+  ctx.clearRect(0, 0, W, H);
+
+  if (data.length < 2) return;
+
+  const max = Math.max(...data, 0.01);
+  const pts = data.map((v, i) => ({
+    x: (i / (MAX_PTS - 1)) * W,
+    y: H - (v / max) * (H - 20) - 10,
+  }));
+
+  // Gradient fill
+  const grad = ctx.createLinearGradient(0, 0, 0, H);
+  grad.addColorStop(0,   'rgba(0,212,255,0.3)');
+  grad.addColorStop(1,   'rgba(0,212,255,0)');
+
+  ctx.beginPath();
+  ctx.moveTo(pts[0].x, H);
+  ctx.lineTo(pts[0].x, pts[0].y);
+  for (let i = 1; i < pts.length; i++) {
+    const cp = { x: (pts[i-1].x + pts[i].x) / 2, y: (pts[i-1].y + pts[i].y) / 2 };
+    ctx.quadraticCurveTo(pts[i-1].x, pts[i-1].y, cp.x, cp.y);
+  }
+  ctx.lineTo(pts[pts.length-1].x, pts[pts.length-1].y);
+  ctx.lineTo(pts[pts.length-1].x, H);
+  ctx.closePath();
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  // Line
+  ctx.beginPath();
+  ctx.moveTo(pts[0].x, pts[0].y);
+  for (let i = 1; i < pts.length; i++) {
+    const cp = { x: (pts[i-1].x + pts[i].x) / 2, y: (pts[i-1].y + pts[i].y) / 2 };
+    ctx.quadraticCurveTo(pts[i-1].x, pts[i-1].y, cp.x, cp.y);
+  }
+  ctx.lineTo(pts[pts.length-1].x, pts[pts.length-1].y);
+  ctx.strokeStyle = '#00d4ff';
+  ctx.lineWidth = 2;
+  ctx.shadowColor = '#00d4ff';
+  ctx.shadowBlur = 8;
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  // Y-axis labels
+  ctx.fillStyle = 'rgba(74,122,144,0.8)';
+  ctx.font = '10px Share Tech Mono, monospace';
+  ctx.fillText(max.toFixed(2) + ' r/s', 4, 16);
+  ctx.fillText('0', 4, H - 4);
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+function setText(id, val) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = val;
+}
+
+function fmtNum(n) {
+  if (n >= 1e6) return (n/1e6).toFixed(1)+'M';
+  if (n >= 1e3) return (n/1e3).toFixed(1)+'K';
+  return Math.round(n).toString();
+}
+
+function setConnected(ok) {
+  const dot = document.getElementById('status-dot');
+  const txt = document.getElementById('connection-status');
+  dot.className = 'status-dot' + (ok ? '' : ' dead');
+  txt.textContent = ok ? 'LIVE' : 'OFFLINE';
+}
+
+function showError(msg) {
+  const el = document.getElementById('error-banner');
+  el.style.display = 'block';
+  el.textContent = '⚠ ' + msg;
+}
+
+function hideError() {
+  document.getElementById('error-banner').style.display = 'none';
+}
+
+let logLines = [];
+function log(msg, type='ok') {
+  const ts = new Date().toLocaleTimeString();
+  logLines.push({ ts, msg, type });
+  if (logLines.length > 80) logLines.shift();
+  const el = document.getElementById('log-stream');
+  el.innerHTML = logLines.slice(-30).reverse().map(l =>
+    `<div class="log-entry"><span class="log-ts">${l.ts}</span><span class="log-${l.type}">${l.msg}</span></div>`
+  ).join('');
+}
+
+function applyConfig() {
+  metricsUrl = document.getElementById('metrics-url').value.trim();
+  pollMs     = Math.max(1, parseInt(document.getElementById('poll-interval').value) || 2) * 1000;
+  clearInterval(timerId);
+  rpsHistory = [];
+  prevTotal  = null;
+  prevTs     = null;
+  log(`Config updated → ${metricsUrl} @ ${pollMs/1000}s interval`);
+  start();
+}
+
+function start() {
+  fetchMetrics();
+  timerId = setInterval(fetchMetrics, pollMs);
+}
+
+window.addEventListener('resize', drawChart);
+start();
+</script>
+</body>
+</html>

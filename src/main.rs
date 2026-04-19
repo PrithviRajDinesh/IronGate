@@ -27,6 +27,24 @@ use moka::future::Cache;
 use std::time::Duration;
 use rand::thread_rng;
 use rand::distributions::{WeightedIndex, Distribution};
+use prometheus::{register_counter_vec, register_gauge_vec, CounterVec, GaugeVec, Encoder, TextEncoder};
+use lazy_static::lazy_static;
+
+lazy_static! {
+    static ref HTTP_REQUESTS_TOTAL: CounterVec = register_counter_vec!(
+        // Tracks total requests, labeled by which backend handled it and the HTTP status code
+        "iron_gate_requests_total",
+        "Total HTTP requests routed",
+        &["backend", "status"]
+    ).unwrap();
+
+    // Tracks live connections, labeled by backend
+    static ref ACTIVE_CONNECTIONS: GaugeVec = register_gauge_vec!(
+        "iron_gate_active_connections",
+        "Currently active zero-copy streams",
+        &["backend"]
+    ).unwrap();
+}
 
 const RATE_LIMIT_SCRIPT: &str = r#"
     local key = KEYS[1]
@@ -122,18 +140,24 @@ impl BackendRegistry {
 
 struct ConnectionGuard {
     active_connections: Arc<AtomicUsize>,
+    backend_addr: String,
 }
 
 impl ConnectionGuard {
-    fn new(counter: Arc<AtomicUsize>) -> Self {
+    fn new(counter: Arc<AtomicUsize>, addr: String) -> Self {
         counter.fetch_add(1, Ordering::SeqCst);
-        Self { active_connections: counter}
+
+        ACTIVE_CONNECTIONS.with_label_values(&[&addr]).inc();
+        
+        Self { active_connections: counter, backend_addr: addr}
     }
 }
 
 impl Drop for ConnectionGuard {
     fn drop(&mut self) {
         self.active_connections.fetch_sub(1, Ordering::SeqCst);
+
+        ACTIVE_CONNECTIONS.with_label_values(&[&self.backend_addr]).dec();
     }
 }
 
@@ -299,6 +323,25 @@ async fn lb_handler(
         return handle_stats_request(state).await;
     }
 
+    // In your lb_handler or wherever you serve /metrics
+    if path == "/metrics" {
+        let encoder = TextEncoder::new();
+        let metric_families = prometheus::gather();
+        let mut buffer = Vec::new();
+        encoder.encode(&metric_families, &mut buffer).unwrap();
+
+        return Ok(Response::builder()
+            .status(200)
+            .header("Content-Type", encoder.format_type())
+            .header("Access-Control-Allow-Origin", "*")  // ← add this line
+            .body(
+                Full::new(Bytes::from(buffer))
+                    .map_err(|e| match e {})
+                    .boxed(),
+            )
+            .unwrap());
+    }
+
     let target_backend = match state.registry.weighted_random() {
         Some(b) => b,
         None => {
@@ -307,9 +350,10 @@ async fn lb_handler(
         }
     };
 
-    let guard = ConnectionGuard::new(target_backend.active_connections.clone());
-
     let target_backend_addr = target_backend.addr.clone();
+    
+    let guard = ConnectionGuard::new(target_backend.active_connections.clone(), target_backend_addr.clone());
+
 
     let uri_string = format!("http://{}{}", target_backend.addr, path);
     let uri = uri_string.parse::<hyper::Uri>()?;
@@ -350,7 +394,12 @@ async fn lb_handler(
                 eprintln!("Redis Stats Error: {}", e);
             }
         });
+
+        HTTP_REQUESTS_TOTAL
+            .with_label_values(&[&target_backend_addr, response.status().as_str()])
+            .inc();
     }
+
     let is_cacheable = curr_config.feature_flags.enable_caching
     && is_get_request
     && response.status().is_success();
