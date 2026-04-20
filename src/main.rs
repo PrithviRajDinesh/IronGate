@@ -461,7 +461,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config_manager = Arc::new(ConfigManager::new("config.toml")?);
     ConfigManager::watch_for_changes(Arc::clone(&config_manager))?;
 
-    let redis_client = redis::Client::open("redis://127.0.0.1/")?;
+    let redis_client = redis::Client::open("redis://redis/")?;
     let redis_manager = redis_client
         .get_connection_manager()
         .await?;

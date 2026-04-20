@@ -3,11 +3,11 @@ timeout_ms = 8000
 max_connections = 1000
 
 [[backends]]
-address = "127.0.0.1:9001"
+address = "172.17.0.1:9001"
 weight = 10
 
 [[backends]]
-address = "127.0.0.1:9002"
+address = "172.17.0.1:9002"
 weight = 1
 
 [feature_flags]
