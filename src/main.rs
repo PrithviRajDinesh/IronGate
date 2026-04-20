@@ -33,14 +33,14 @@ use lazy_static::lazy_static;
 lazy_static! {
     static ref HTTP_REQUESTS_TOTAL: CounterVec = register_counter_vec!(
         // Tracks total requests, labeled by which backend handled it and the HTTP status code
-        "iron_gate_requests_total",
+        "tachyon_requests_total",
         "Total HTTP requests routed",
         &["backend", "status"]
     ).unwrap();
 
     // Tracks live connections, labeled by backend
     static ref ACTIVE_CONNECTIONS: GaugeVec = register_gauge_vec!(
-        "iron_gate_active_connections",
+        "tachyon_active_connections",
         "Currently active zero-copy streams",
         &["backend"]
     ).unwrap();
@@ -503,7 +503,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = args.addr.to_socket_addrs()?.next().unwrap();
     let listener = TcpListener::bind(&addr).await?;
 
-    println!("LBRust active on https://{}", addr);
+    println!("Tachyon active on https://{}", addr);
 
     let health_state = Arc::clone(&state);
 
@@ -532,7 +532,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    println!("Iron Gate is running! Press Ctrl+C to stop.");
+    println!("Tachyon is running! Press Ctrl+C to stop.");
 
     loop {
         tokio::select! {
@@ -578,7 +578,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Branch B: Listen for the OS shutdown signal
             _ = tokio::signal::ctrl_c() => {
-                println!("\n🛑 Graceful shutdown initiated. Refusing new connections...");
+                println!("\n Tachyon: Graceful shutdown initiated. Refusing new connections...");
                 break;
             }
         }

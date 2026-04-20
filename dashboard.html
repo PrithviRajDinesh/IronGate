@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Iron Gate — Live Dashboard</title>
+<title>Tachyon — Live Dashboard</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet" />
 <style>
@@ -399,7 +399,7 @@
   <!-- Header -->
   <header>
     <div class="logo">
-      <span class="logo-title">IRON GATE</span>
+      <span class="logo-title">TACHYON</span>
       <span class="logo-sub">Load Balancer Monitor</span>
     </div>
     <div class="header-right">
@@ -531,9 +531,9 @@ async function fetchMetrics() {
 function processMetrics(m) {
   const now = Date.now();
 
-  // ── iron_gate_requests_total ─────────────────────────────────────────────
-  const reqSeries  = m['iron_gate_requests_total'] || [];
-  const connSeries = m['iron_gate_active_connections'] || [];
+  // ── Tachyon_requests_total ─────────────────────────────────────────────
+  const reqSeries  = m['tachyon_requests_total'] || [];
+  const connSeries = m['tachyon_active_connections'] || [];
 
   // Group by backend
   const byBackend = {};
@@ -645,7 +645,7 @@ function processMetrics(m) {
   }
 
   if (backendList.length === 0) {
-    grid.innerHTML = '<div class="backend-card" style="color:var(--muted);font-size:0.8rem">No backend data yet — is Iron Gate running?</div>';
+    grid.innerHTML = '<div class="backend-card" style="color:var(--muted);font-size:0.8rem">No backend data yet — is Tachyon running?</div>';
   }
 
   // ── Chart ─────────────────────────────────────────────────────────────────
